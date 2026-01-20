@@ -6,7 +6,6 @@ Daily Run Management Command - 统一执行所有日常任务
     python manage.py daily_run --skip-details --skip-news
 """
 
-import json
 import logging
 from datetime import datetime
 from django.core.management.base import BaseCommand
@@ -250,11 +249,7 @@ class Command(BaseCommand):
         results["duration_seconds"] = duration
 
         self.stdout.write(self.style.SUCCESS("\n" + "=" * 80))
-        self.stdout.write(self.style.SUCCESS(f"Daily Run Completed: {end_time.strftime('%Y-%m-%d %H:%M:%S')}"))
-        self.stdout.write(self.style.SUCCESS(f"Total Duration: {duration:.2f} seconds"))
+        self.stdout.write(self.style.SUCCESS(f"Total Duration: {duration/60:.2f} min"))
         self.stdout.write(self.style.SUCCESS("=" * 80))
-
-        # Output JSON results
-        self.stdout.write("\n" + json.dumps(results, indent=2, default=str))
         
         logger.info(f"Daily run completed in {duration:.2f} seconds")
