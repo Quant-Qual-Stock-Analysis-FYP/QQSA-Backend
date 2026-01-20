@@ -1,0 +1,40 @@
+# Django Core Framework
+Django==4.2.27
+djangorestframework==3.14.0
+sqlparse==0.4.4
+
+# Database Driver (PostgreSQL)
+psycopg2-binary==2.9.9
+
+# ASGI Server & WebSocket Support
+daphne==4.0.0
+channels==4.0.0
+channels-redis==4.1.0
+
+# CORS & Authentication
+django-cors-headers==4.3.1
+djangorestframework-simplejwt==5.3.0
+
+# Environment Variables Management
+python-dotenv==1.0.0
+
+# Data Science & Numerical Computing
+numpy==1.24.3
+pandas==2.0.3
+
+# Financial Data APIs
+yahooquery==2.3.6
+finnhub-python==2.4.18
+
+# AI/ML Libraries
+openai==1.12.0
+sentence-transformers==2.2.2
+
+# Timezone Support
+pytz==2024.1
+
+# WebSocket Utilities
+websockets==12.0
+
+# Fix urllib3 compatibility with LibreSSL (macOS)(Optional)
+urllib3<2.0

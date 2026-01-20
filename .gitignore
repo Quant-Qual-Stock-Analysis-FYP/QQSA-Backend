@@ -1,0 +1,17 @@
+# Django 產生的垃圾
+*.log
+*.pot
+*.pyc
+__pycache__/
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# 虛擬環境 (絕對不要上傳)
+venv/
+.env
+
+# 編輯器產生的設定
+.vscode/
+.idea/
+.DS_Store
