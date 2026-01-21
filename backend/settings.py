@@ -99,11 +99,11 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'fyp_db',        # 對應 Docker 的 POSTGRES_DB
-        'USER': 'jacky',      # 對應 Docker 的 POSTGRES_USER
-        'PASSWORD': 'password',  # 對應 Docker 的 POSTGRES_PASSWORD
-        'HOST': 'localhost',     # 因為你是從本機連線到 Docker 容器
-        'PORT': '5432',          # 對應 Docker 映射出來的 Port
+        'NAME': os.getenv('POSTGRES_DB'),        # 對應 Docker 的 POSTGRES_DB
+        'USER': os.getenv('POSTGRES_USER'),      # 對應 Docker 的 POSTGRES_USER
+        'PASSWORD': os.getenv('POSTGRES_PASSWORD'),  # 對應 Docker 的 POSTGRES_PASSWORD
+        'HOST': os.getenv('POSTGRES_HOST'),     # 因為你是從本機連線到 Docker 容器
+        'PORT': os.getenv('POSTGRES_PORT'),          # 對應 Docker 映射出來的 Port
     }
 }
 

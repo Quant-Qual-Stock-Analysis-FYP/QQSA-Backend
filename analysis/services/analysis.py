@@ -56,18 +56,26 @@ def _calculate_volatility(closes: List[float], window: int = 60) -> float:
     return float(pstdev(daily_returns)) * 100
 
 
-def _rag_score(sentiment: str) -> int:
-    # 新闻情绪映射为量化分数
-    # Unknown 时返回 50（中性分数），表示数据不足但不影响整体评分
-    score_map = {"Positive": 90, "Neutral": 50, "Negative": 20, "Unknown": 50}
-    return score_map.get(sentiment, 50)
+def _rag_score(score: int) -> int:
+    # RAG sentiment now returns numeric score (0-100) directly
+    # This function is kept for backward compatibility but just returns the score
+    return max(0, min(100, score))
 
 
-def _fundamental_score(sentiment: str) -> int:
-    # 基本面情绪映射为量化分数
-    # Unknown 时返回 50（中性分数），表示数据不足但不影响整体评分
-    score_map = {"Positive": 80, "Neutral": 50, "Negative": 25, "Unknown": 50}
-    return score_map.get(sentiment, 50)
+def _fundamental_score(score: int) -> int:
+    # Fundamental analysis now returns numeric score (0-100) directly
+    # This function is kept for backward compatibility but just returns the score
+    return max(0, min(100, score))
+
+
+def _score_to_sentiment_label(score: int) -> str:
+    """Convert numeric score (0-100) to sentiment label for backward compatibility."""
+    if score >= 70:
+        return "Positive"
+    elif score <= 30:
+        return "Negative"
+    else:
+        return "Neutral"
 
 
 def _signal_from_score(overall_score: int) -> str:
@@ -284,9 +292,11 @@ def build_market_context() -> Dict[str, Any]:
         if not stock:
             continue
         efs_score, _, _ = run_efs_analysis(symbol)
-        rag_sentiment, rag_reason, _ = get_rag_sentiment(symbol)
+        rag_score, rag_reason, _ = get_rag_sentiment(symbol)
         efs_scores.append(efs_score)
-        sentiments.append(rag_sentiment)
+        # Convert numeric score to sentiment label for compatibility
+        sentiment_label = _score_to_sentiment_label(rag_score)
+        sentiments.append(sentiment_label)
         if rag_reason and "no news" not in rag_reason.lower():
             reasons.append(_shorten_reason(rag_reason))
             any_news = True
@@ -340,8 +350,8 @@ def generate_analysis(symbol: str, market_context: Optional[Dict[str, Any]] = No
     if market_context is None:
         market_context = build_market_context()
     efs_score, efs_detail, efs_formula = run_efs_analysis(symbol)
-    rag_sentiment, rag_reason, rag_source = get_rag_sentiment(symbol)
-    fund_sentiment, fund_reason, fund_source = get_rag_fundamental(symbol)
+    rag_score, rag_reason, rag_source = get_rag_sentiment(symbol)
+    fund_score, fund_reason, fund_source = get_rag_fundamental(symbol)
 
     stock = Stock.objects.filter(symbol=symbol.upper()).first()
     efs_series = list(EfsDataPoint.objects.filter(stock=stock).order_by("date")) if stock else []
@@ -354,8 +364,9 @@ def generate_analysis(symbol: str, market_context: Optional[Dict[str, Any]] = No
         ma50 = sum(closes[-50:]) / 50
         price_above_ma50 = closes[-1] > ma50
 
-    rag_score = _rag_score(rag_sentiment)
-    fundamental_score = _fundamental_score(fund_sentiment)
+    # RAG functions now return numeric scores directly
+    rag_score = _rag_score(rag_score)
+    fundamental_score = _fundamental_score(fund_score)
     applied_market_bias = (
         int(market_context.get("market_bias", 0))
         if market_context and not is_etf_symbol(symbol)
@@ -412,10 +423,10 @@ def generate_analysis(symbol: str, market_context: Optional[Dict[str, Any]] = No
     {alpha_prompt}
     - Safety Score (Risk Stability): {risk_score}/100 ({prompt_risk_detail})
     - Risk Formula: {prompt_risk_formula}
-    - Fundamental RAG Sentiment: {fund_sentiment}
+    - Fundamental RAG Score: {fund_score}/100
     - Fundamental Context: {prompt_fund_reason}
-    - News Sentiment (RAG): {rag_sentiment}
-    - Sentiment Score: {rag_score}/100
+    - News Sentiment Score (RAG): {rag_score}/100
+    - Sentiment Context: {prompt_rag_reason}
     - Key News Context: {prompt_rag_reason}
     {market_prompt}
     
@@ -485,7 +496,11 @@ def generate_analysis(symbol: str, market_context: Optional[Dict[str, Any]] = No
         90,
         _fallback_fundamental_reason(fundamental_score),
     )
-    if fund_sentiment == "Unknown":
+    # Convert scores to sentiment labels for compatibility checks
+    fund_sentiment_label = _score_to_sentiment_label(fund_score)
+    rag_sentiment_label = _score_to_sentiment_label(rag_score)
+    
+    if fund_score == 50 and ("not available" in fund_reason.lower() or "no fundamental" in fund_reason.lower()):
         fundamental_reason = (
             "Fundamental documents are not available in the current dataset, so the "
             "fundamental score is set to 50 (neutral) to reflect limited visibility into "
@@ -501,9 +516,9 @@ def generate_analysis(symbol: str, market_context: Optional[Dict[str, Any]] = No
         ai_data.get("sentiment_reason"),
         70,
         90,
-        _fallback_sentiment_reason(rag_score, rag_sentiment, rag_reason),
+        _fallback_sentiment_reason(rag_score, rag_sentiment_label, rag_reason),
     )
-    if rag_sentiment == "Unknown":
+    if rag_score == 50 and ("not available" in rag_reason.lower() or "no news" in rag_reason.lower()):
         sentiment_reason = (
             "Sentiment documents are not available in the current dataset, so the "
             "sentiment score is set to 50 (neutral) to reflect limited visibility into "
@@ -570,7 +585,7 @@ def generate_analysis(symbol: str, market_context: Optional[Dict[str, Any]] = No
         
         # ========== 评分（包含 overall_score） ==========
         "scores": {
-            "risk": risk_score,
+            "stability": risk_score,
             "sentiment": rag_score,
             "technical": efs_score,
             "fundamental": fundamental_score,
@@ -586,7 +601,7 @@ def generate_analysis(symbol: str, market_context: Optional[Dict[str, Any]] = No
         
         # ========== 各维度详细分析 ==========
         "analysis": {
-            "risk": {
+            "stability": {
                 "score": risk_score,
                 "reason": risk_reason,
                 "data": {
@@ -599,7 +614,8 @@ def generate_analysis(symbol: str, market_context: Optional[Dict[str, Any]] = No
                 "score": rag_score,
                 "reason": sentiment_reason,
                 "data": {
-                    "sentiment": rag_sentiment,
+                    "sentiment": rag_sentiment_label,
+                    "score": rag_score,
                     "source": rag_source,
                     "reason": rag_reason,
                 }
@@ -623,7 +639,8 @@ def generate_analysis(symbol: str, market_context: Optional[Dict[str, Any]] = No
                 "score": fundamental_score,
                 "reason": fundamental_reason,
                 "data": {
-                    "sentiment": fund_sentiment,
+                    "sentiment": fund_sentiment_label,
+                    "score": fund_score,
                     "source": fund_source,
                     "reason": fund_reason,
                 }
