@@ -118,9 +118,8 @@ class EfsAlphaEvaluation(models.Model):
         ]
 
 class MarketContext(models.Model):
-    """Market context data (regime, cycle, bias, etc.)"""
+    """Market context data (cycle, bias, etc.)"""
 
-    market_regime = models.CharField(max_length=32, default="Neutral")  # Bullish, Bearish, Neutral
     market_cycle = models.CharField(max_length=32, default="Base")  # Bull, Bear, Base
     market_score = models.IntegerField(default=50)  # 0-100
     market_bias = models.IntegerField(default=0)  # -8, 0, 8
@@ -135,18 +134,16 @@ class MarketContext(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"Market Context ({self.market_regime}) - {self.updated_at.strftime('%Y-%m-%d %H:%M')}"
+        return f"Market Context ({self.market_cycle}) - {self.updated_at.strftime('%Y-%m-%d %H:%M')}"
 
     def to_dict(self) -> dict:
         """Convert to dictionary format matching API response"""
         return {
-            "market_regime": self.market_regime,
             "market_cycle": self.market_cycle,
             "market_score": self.market_score,
             "market_bias": self.market_bias,
             "market_reason": self.market_reason,
         }
-
 
 class AnalysisResult(models.Model):
     """Persisted AI output per stock for quick retrieval."""

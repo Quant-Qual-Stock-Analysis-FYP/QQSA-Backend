@@ -107,7 +107,6 @@ def update_market_context() -> Dict[str, Any]:
     # 保存到數據庫（只保留最新的一條記錄）
     MarketContext.objects.all().delete()  # 刪除舊記錄
     MarketContext.objects.create(
-        market_regime=market_context.get("market_regime", "Neutral"),
         market_cycle=market_context.get("market_cycle", "Base"),
         market_score=market_context.get("market_score", 50),
         market_bias=market_context.get("market_bias", 0),

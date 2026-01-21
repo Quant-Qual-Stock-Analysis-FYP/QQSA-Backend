@@ -198,8 +198,7 @@ class Command(BaseCommand):
                 mc = market_context_result.get("market_context", {})
                 self.stdout.write(
                     self.style.SUCCESS(
-                        f"  ✓ Regime: {mc.get('market_regime', 'N/A')}, "
-                        f"Cycle: {mc.get('market_cycle', 'N/A')}, "
+                        f"  ✓ Cycle: {mc.get('market_cycle', 'N/A')}, "
                         f"Score: {mc.get('market_score', 'N/A')}, "
                         f"Bias: {mc.get('market_bias', 'N/A')}"
                     )

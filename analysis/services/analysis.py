@@ -6,7 +6,19 @@ from statistics import pstdev
 from typing import Any, Dict, List, Optional, Tuple
 
 from markets.models import Stock
-from ..config.constants import ETF_SYMBOLS
+from ..config.constants import (
+    ETF_SYMBOLS,
+    EQUITY_ETFS,
+    BOND_ETFS,
+    CASH_ETFS,
+    COMMODITY_ETFS,
+    GROWTH_ETF,
+    VALUE_ETF,
+    BENCHMARK_ETF,
+    LONG_BOND_ETF,
+    MID_BOND_ETF,
+    SHORT_BOND_ETF,
+)
 from ..models import AnalysisResult, EfsAlphaFactor, EfsDataPoint
 from .ai import call_deepseek
 from .efs import calculate_risk_score, run_efs_analysis
@@ -278,68 +290,632 @@ def _build_one_liner(
     return ", ".join(parts) + "."
 
 
-def build_market_context() -> Dict[str, Any]:
-    """
-    Build a market regime signal from ETF universe (SPY/QQQ/DIA).
-    """
-    efs_scores: List[int] = []
-    sentiments: List[str] = []
-    reasons: List[str] = []
-    any_news = False
-
+def _get_etf_scores_and_prices() -> Dict[str, Dict[str, Any]]:
+    """獲取所有 ETF 的技術分數和價格數據"""
+    etf_data = {}
+    
     for symbol in ETF_SYMBOLS:
         stock = Stock.objects.filter(symbol=symbol).first()
         if not stock:
             continue
-        efs_score, _, _ = run_efs_analysis(symbol)
-        rag_score, rag_reason, _ = get_rag_sentiment(symbol)
-        efs_scores.append(efs_score)
-        # Convert numeric score to sentiment label for compatibility
-        sentiment_label = _score_to_sentiment_label(rag_score)
-        sentiments.append(sentiment_label)
-        if rag_reason and "no news" not in rag_reason.lower():
-            reasons.append(_shorten_reason(rag_reason))
-            any_news = True
+        
+        try:
+            # 獲取技術分數
+            efs_score, _, _ = run_efs_analysis(symbol)
+            
+            # 獲取價格數據（用於計算相對強弱）
+            data_points = list(
+                EfsDataPoint.objects.filter(stock=stock)
+                .order_by("-date")[:252]  # 約1年的數據
+            )
+            
+            if not data_points:
+                continue
+            
+            closes = [float(dp.close) for dp in data_points]
+            current_price = closes[0] if closes else None
+            
+            # 計算相對價格變化（相對於基準）
+            price_change_20d = None
+            price_change_60d = None
+            if len(closes) >= 20:
+                price_change_20d = ((closes[0] / closes[min(19, len(closes)-1)]) - 1) * 100
+            if len(closes) >= 60:
+                price_change_60d = ((closes[0] / closes[min(59, len(closes)-1)]) - 1) * 100
+            
+            etf_data[symbol] = {
+                "score": efs_score,
+                "price": current_price,
+                "closes": closes,  # 保存完整價格歷史用於計算相對均線
+                "change_20d": price_change_20d,
+                "change_60d": price_change_60d,
+                "data_points": len(data_points),
+            }
+        except Exception as e:
+            logger.debug(f"Error processing ETF {symbol}: {e}")
+            continue
+    
+    return etf_data
 
-    if not efs_scores:
+
+def _calculate_relative_strength(etf_data: Dict[str, Dict[str, Any]]) -> Dict[str, float]:
+    """
+    計算相對強弱比率（使用相對均線方法）
+    
+    改進：不再使用絕對比率（Price_A / Price_B），而是使用相對均線
+    - 計算當前比率 vs 20日均線比率
+    - 如果當前比率 > 20日均線 → 強勢
+    - 如果當前比率 < 20日均線 → 弱勢
+    """
+    ratios = {}
+    ratio_ma20 = {}  # 存儲20日均線比率，用於判斷相對強弱
+    
+    # QQQ/SPY: 成長 vs 基準
+    if GROWTH_ETF in etf_data and BENCHMARK_ETF in etf_data:
+        qqq_closes = etf_data[GROWTH_ETF].get("closes", [])
+        spy_closes = etf_data[BENCHMARK_ETF].get("closes", [])
+        if qqq_closes and spy_closes and len(qqq_closes) >= 20 and len(spy_closes) >= 20:
+            # 計算歷史比率序列（取較短的長度，確保對齊）
+            ratio_history = []
+            min_len = min(len(qqq_closes), len(spy_closes))
+            for i in range(min_len):
+                if spy_closes[i] > 0:
+                    ratio_history.append(qqq_closes[i] / spy_closes[i])
+            
+            if ratio_history and len(ratio_history) >= 20:
+                current_ratio = ratio_history[0]
+                # 計算20日均線
+                ma20_ratio = sum(ratio_history[:20]) / 20
+                ratios["qqq_spy"] = current_ratio
+                ratio_ma20["qqq_spy"] = ma20_ratio
+    
+    # SPY/TLT: 股票 vs 長期債券
+    if BENCHMARK_ETF in etf_data and LONG_BOND_ETF in etf_data:
+        spy_closes = etf_data[BENCHMARK_ETF].get("closes", [])
+        tlt_closes = etf_data[LONG_BOND_ETF].get("closes", [])
+        if spy_closes and tlt_closes and len(spy_closes) >= 20 and len(tlt_closes) >= 20:
+            ratio_history = []
+            min_len = min(len(spy_closes), len(tlt_closes))
+            for i in range(min_len):
+                if tlt_closes[i] > 0:
+                    ratio_history.append(spy_closes[i] / tlt_closes[i])
+            
+            if ratio_history and len(ratio_history) >= 20:
+                current_ratio = ratio_history[0]
+                ma20_ratio = sum(ratio_history[:20]) / 20
+                ratios["spy_tlt"] = current_ratio
+                ratio_ma20["spy_tlt"] = ma20_ratio
+    
+    # DIA/QQQ: 價值 vs 成長
+    if VALUE_ETF in etf_data and GROWTH_ETF in etf_data:
+        dia_closes = etf_data[VALUE_ETF].get("closes", [])
+        qqq_closes = etf_data[GROWTH_ETF].get("closes", [])
+        if dia_closes and qqq_closes and len(dia_closes) >= 20 and len(qqq_closes) >= 20:
+            ratio_history = []
+            min_len = min(len(dia_closes), len(qqq_closes))
+            for i in range(min_len):
+                if qqq_closes[i] > 0:
+                    ratio_history.append(dia_closes[i] / qqq_closes[i])
+            
+            if ratio_history and len(ratio_history) >= 20:
+                current_ratio = ratio_history[0]
+                ma20_ratio = sum(ratio_history[:20]) / 20
+                ratios["dia_qqq"] = current_ratio
+                ratio_ma20["dia_qqq"] = ma20_ratio
+    
+    # TLT/BIL: 長期債券 vs 現金
+    if LONG_BOND_ETF in etf_data and SHORT_BOND_ETF in etf_data:
+        tlt_closes = etf_data[LONG_BOND_ETF].get("closes", [])
+        bil_closes = etf_data[SHORT_BOND_ETF].get("closes", [])
+        if tlt_closes and bil_closes and len(tlt_closes) >= 20 and len(bil_closes) >= 20:
+            ratio_history = []
+            min_len = min(len(tlt_closes), len(bil_closes))
+            for i in range(min_len):
+                if bil_closes[i] > 0:
+                    ratio_history.append(tlt_closes[i] / bil_closes[i])
+            
+            if ratio_history and len(ratio_history) >= 20:
+                current_ratio = ratio_history[0]
+                ma20_ratio = sum(ratio_history[:20]) / 20
+                ratios["tlt_bil"] = current_ratio
+                ratio_ma20["tlt_bil"] = ma20_ratio
+    
+    # SPY/BIL: 股票 vs 現金
+    if BENCHMARK_ETF in etf_data and SHORT_BOND_ETF in etf_data:
+        spy_closes = etf_data[BENCHMARK_ETF].get("closes", [])
+        bil_closes = etf_data[SHORT_BOND_ETF].get("closes", [])
+        if spy_closes and bil_closes and len(spy_closes) >= 20 and len(bil_closes) >= 20:
+            ratio_history = []
+            min_len = min(len(spy_closes), len(bil_closes))
+            for i in range(min_len):
+                if bil_closes[i] > 0:
+                    ratio_history.append(spy_closes[i] / bil_closes[i])
+            
+            if ratio_history and len(ratio_history) >= 20:
+                current_ratio = ratio_history[0]
+                ma20_ratio = sum(ratio_history[:20]) / 20
+                ratios["spy_bil"] = current_ratio
+                ratio_ma20["spy_bil"] = ma20_ratio
+    
+    # 將均線數據附加到 ratios 字典中（用於後續判斷）
+    ratios["_ma20"] = ratio_ma20
+    
+    return ratios
+
+
+def build_market_context() -> Dict[str, Any]:
+    """
+    使用跨市場分析 (Intermarket Analysis) 構建市場週期信號
+    
+    分析邏輯：
+    - Bull Market: QQQ > SPY, SPY > TLT, 股票 > 債券
+    - Bear Market: TLT > SPY, DIA > QQQ, 債券 > 股票
+    - Base/Rotation: 橫盤整理，類股輪動
+    """
+    # 獲取所有 ETF 的技術分數和價格數據
+    etf_data = _get_etf_scores_and_prices()
+    
+    if not etf_data:
         return {
-            "market_regime": "Neutral",
             "market_cycle": "Base",
             "market_score": 50,
             "market_bias": 0,
-            "market_reason": [],
+            "market_reason": ["ETF 數據不足"],
         }
-
-    if not any_news:
-        return {
-            "market_regime": "Neutral",
-            "market_cycle": "Base",
-            "market_score": 50,
-            "market_bias": 0,
-            "market_reason": ["当前市场无显著宏观消息"],
-        }
-
-    avg_score = int(sum(efs_scores) / len(efs_scores))
-    pos = sentiments.count("Positive")
-    neg = sentiments.count("Negative")
-
-    if avg_score >= 70 or pos >= 2:
-        regime = "Bullish"
-        bias = 8
-    elif avg_score <= 45 or neg >= 2:
-        regime = "Bearish"
-        bias = -8
+    
+    # 計算相對強弱比率
+    ratios = _calculate_relative_strength(etf_data)
+    
+    # 獲取情感分析數據
+    sentiments: List[str] = []
+    news_reasons: List[str] = []  # 純新聞原因
+    technical_reasons: List[str] = []  # 技術分析原因
+    any_news = False
+    
+    for symbol in ETF_SYMBOLS:
+        if symbol not in etf_data:
+            continue
+        try:
+            rag_score, rag_reason, _ = get_rag_sentiment(symbol)
+            sentiment_label = _score_to_sentiment_label(rag_score)
+            sentiments.append(sentiment_label)
+            if rag_reason and "no news" not in rag_reason.lower():
+                news_reasons.append(_shorten_reason(rag_reason))
+                any_news = True
+        except Exception as e:
+            logger.debug(f"Error getting sentiment for {symbol}: {e}")
+            continue
+    
+    # 計算各類別的平均分數
+    equity_scores = [
+        etf_data[symbol]["score"]
+        for symbol in EQUITY_ETFS
+        if symbol in etf_data
+    ]
+    bond_scores = [
+        etf_data[symbol]["score"]
+        for symbol in BOND_ETFS
+        if symbol in etf_data
+    ]
+    equity_avg = int(sum(equity_scores) / len(equity_scores)) if equity_scores else 50
+    bond_avg = int(sum(bond_scores) / len(bond_scores)) if bond_scores else 50
+    
+    # 獲取關鍵 ETF 的分數
+    spy_score = etf_data.get(BENCHMARK_ETF, {}).get("score", 50)
+    qqq_score = etf_data.get(GROWTH_ETF, {}).get("score", 50)
+    tlt_score = etf_data.get(LONG_BOND_ETF, {}).get("score", 50)
+    
+    # 計算市場總分（加權平均：股票權重更高）
+    market_score = int((equity_avg * 0.7 + bond_avg * 0.3))
+    
+    # 判斷市場週期和偏差（引入緩衝區和平滑過渡）
+    market_cycle = "Base"
+    market_bias = 0
+    
+    # 獲取相對均線數據（如果可用）
+    ratio_ma20 = ratios.get("_ma20", {})
+    
+    # 使用相對均線判斷比率強弱（如果可用）
+    qqq_spy_ma20 = ratio_ma20.get("qqq_spy")
+    spy_tlt_ma20 = ratio_ma20.get("spy_tlt")
+    dia_qqq_ma20 = ratio_ma20.get("dia_qqq")
+    
+    qqq_spy_current = ratios.get("qqq_spy")
+    spy_tlt_current = ratios.get("spy_tlt")
+    dia_qqq_current = ratios.get("dia_qqq")
+    
+    # 判斷 QQQ/SPY 是否強勢（使用相對均線或絕對值）
+    qqq_strong = False
+    if qqq_spy_ma20 and qqq_spy_current:
+        qqq_strong = qqq_spy_current > qqq_spy_ma20 * 1.02  # 當前比率 > 均線 2%
+    elif qqq_spy_current:
+        qqq_strong = qqq_spy_current > 1.02
+    
+    # 判斷 SPY/TLT 是否強勢
+    spy_strong_vs_tlt = False
+    if spy_tlt_ma20 and spy_tlt_current:
+        spy_strong_vs_tlt = spy_tlt_current > spy_tlt_ma20 * 1.05  # 當前比率 > 均線 5%
+    elif spy_tlt_current:
+        spy_strong_vs_tlt = spy_tlt_current > 1.05
+    
+    # 判斷 DIA/QQQ（價值 vs 成長）
+    dia_strong_vs_qqq = False
+    if dia_qqq_ma20 and dia_qqq_current:
+        dia_strong_vs_qqq = dia_qqq_current > dia_qqq_ma20 * 1.05
+    elif dia_qqq_current:
+        dia_strong_vs_qqq = dia_qqq_current > 1.05
+    
+    # 計算股債差距（用於緩衝區判定）
+    gap = equity_avg - bond_avg
+    gap_threshold = 5  # 緩衝區閾值：5 分
+    
+    # 1. 檢查是否為牛市 (Bull Market)
+    # 條件：股票平均分數高，且有以下任一信號
+    if equity_avg >= 60 and spy_score >= 55:
+        # QQQ 領漲 SPY（成長領跑）- 強牛市信號
+        if qqq_strong or qqq_score > spy_score + 8:
+            market_cycle = "Bull"
+            market_bias = 8
+            technical_reasons.append(f"牛市信號：成長股領漲（QQQ {qqq_score} vs SPY {spy_score}），風險偏好強勁")
+        # SPY 明顯強於 TLT（風險偏好）- 牛市信號
+        elif spy_strong_vs_tlt or equity_avg > bond_avg + 15:
+            market_cycle = "Bull"
+            market_bias = 8
+            if gap >= gap_threshold:
+                technical_reasons.append(f"牛市信號：股票顯著強於債券（股票 {equity_avg} vs 債券 {bond_avg}），風險偏好上升")
+            else:
+                technical_reasons.append(f"牛市信號：股票強於債券（股票 {equity_avg} vs 債券 {bond_avg}），風險偏好上升")
+        # 股票整體強勢但無明顯領跑者
+        elif equity_avg >= 65:
+            market_cycle = "Bull"
+            market_bias = 5
+            technical_reasons.append(f"偏多信號：股票整體強勢（平均分數 {equity_avg}），市場情緒積極")
+    
+    # 2. 檢查是否為熊市 (Bear Market)
+    # 條件：股票平均分數低，或有以下避險信號
+    elif equity_avg <= 45 or spy_score <= 45:
+        # TLT 明顯強於 SPY（避險情緒）- 強熊市信號
+        if (spy_tlt_ma20 and spy_tlt_current and spy_tlt_current < spy_tlt_ma20 * 0.92) or \
+           (spy_tlt_current and spy_tlt_current < 0.92) or \
+           tlt_score > spy_score + 15:
+            market_cycle = "Bear"
+            market_bias = -8
+            if gap <= -gap_threshold:
+                technical_reasons.append(f"熊市信號：債券顯著強於股票（TLT {tlt_score} vs SPY {spy_score}），避險情緒濃厚")
+            else:
+                technical_reasons.append(f"熊市信號：債券強於股票（TLT {tlt_score} vs SPY {spy_score}），避險情緒強烈")
+        # DIA 跑贏 QQQ（防禦性輪動）- 熊市信號
+        elif dia_strong_vs_qqq or (
+            VALUE_ETF in etf_data and GROWTH_ETF in etf_data and
+            etf_data[VALUE_ETF]["score"] > etf_data[GROWTH_ETF]["score"] + 10
+        ):
+            market_cycle = "Bear"
+            market_bias = -8
+            technical_reasons.append(f"熊市信號：價值股跑贏成長股（DIA {etf_data.get(VALUE_ETF, {}).get('score', 50)} vs QQQ {qqq_score}），防禦性輪動")
+        # 股票整體弱勢
+        elif equity_avg <= 40:
+            market_cycle = "Bear"
+            market_bias = -5
+            technical_reasons.append(f"偏空信號：股票整體弱勢（平均分數 {equity_avg}），市場情緒謹慎")
+    
+    # 3. 檢查是否為築底/輪動 (Base/Rotation)
+    # 條件：市場分數在中等範圍（45 < equity_avg < 60），需要更細緻的判斷
     else:
-        regime = "Neutral"
-        bias = 0
-
+        market_cycle = "Base"
+        # 引入緩衝區和平滑過渡（僅在 Base 週期內）
+        # Base 週期的 equity_avg 範圍是 45-60（不包括邊界，因為邊界屬於 Bull/Bear）
+        if equity_avg >= 55:  # 55-60 分：偏多緩衝區
+            market_bias = 4
+        elif equity_avg <= 45:  # 40-45 分：偏空緩衝區（理論上不會進入這裡，因為 <=45 會觸發 Bear）
+            market_bias = -4
+        else:  # 45-55 分：中性
+            market_bias = 0
+        
+        # 檢查相對強弱來判斷趨勢
+        spy_vs_tlt = ratios.get("spy_tlt", 1.0)
+        qqq_vs_spy = ratios.get("qqq_spy", 1.0)
+        
+        # 如果股票略強於債券，但分數不高，可能是築底
+        if spy_vs_tlt > 1.0 and equity_avg > bond_avg:
+            if abs(gap) < gap_threshold:
+                # 差距小於 5 分，視為「膠著」或「平衡」
+                if abs(qqq_score - spy_score) > 8:
+                    technical_reasons.append(f"市場橫盤整理：股債評分接近（{equity_avg} vs {bond_avg}），類股輪動明顯（QQQ {qqq_score} vs SPY {spy_score}），資金無明顯流向")
+                else:
+                    technical_reasons.append(f"市場橫盤整理：股債評分接近（{equity_avg} vs {bond_avg}），資金無明顯流向")
+            elif gap >= gap_threshold:
+                # 股票顯著強於債券
+                if abs(qqq_score - spy_score) > 8:
+                    technical_reasons.append(f"市場築底中：股票顯著強於債券（{equity_avg} vs {bond_avg}），類股輪動明顯（QQQ {qqq_score} vs SPY {spy_score}），風險偏好上升")
+                else:
+                    technical_reasons.append(f"市場橫盤整理：股票顯著強於債券（{equity_avg} vs {bond_avg}），風險偏好上升")
+        # 如果債券略強，可能是防禦性配置
+        elif spy_vs_tlt < 1.0:
+            if abs(gap) < gap_threshold:
+                # 差距小於 5 分，視為「膠著」或「平衡」
+                technical_reasons.append(f"市場橫盤整理：股債評分接近（{equity_avg} vs {bond_avg}），資金無明顯流向")
+            elif gap <= -gap_threshold:
+                # 債券顯著強於股票
+                technical_reasons.append(f"市場謹慎：債券顯著強於股票（債券 {bond_avg} vs 股票 {equity_avg}），避險情緒濃厚")
+            else:
+                # 債券略強但差距不大
+                technical_reasons.append(f"市場謹慎：債券略強於股票（債券 {bond_avg} vs 股票 {equity_avg}），資金尋求避險")
+        # 其他情況：真正的橫盤
+        else:
+            if abs(gap) < gap_threshold:
+                # 股債評分接近
+                if abs(qqq_score - (etf_data.get(VALUE_ETF, {}).get("score", 50))) > 10:
+                    technical_reasons.append(f"市場橫盤整理：股債評分接近（{equity_avg} vs {bond_avg}），類股輪動明顯（QQQ {qqq_score} vs DIA {etf_data.get(VALUE_ETF, {}).get('score', 50)}），資金無明顯流向")
+                else:
+                    technical_reasons.append(f"市場橫盤整理：股債評分接近（{equity_avg} vs {bond_avg}），各類資產表現均衡，資金無明顯流向")
+            else:
+                if abs(qqq_score - (etf_data.get(VALUE_ETF, {}).get("score", 50))) > 10:
+                    technical_reasons.append(f"市場橫盤整理：類股輪動明顯（QQQ {qqq_score} vs DIA {etf_data.get(VALUE_ETF, {}).get('score', 50)}），方向不明")
+                else:
+                    technical_reasons.append(f"市場橫盤整理：各類資產表現均衡（股票 {equity_avg}，債券 {bond_avg}），等待催化劑")
+    
+    # 生成 AI 綜合解釋，說明市場週期判斷和偏差的原因
+    ai_explanation = _generate_market_cycle_explanation(
+        market_cycle=market_cycle,
+        market_score=market_score,
+        market_bias=market_bias,
+        equity_avg=equity_avg,
+        bond_avg=bond_avg,
+        spy_score=spy_score,
+        qqq_score=qqq_score,
+        tlt_score=tlt_score,
+        ratios=ratios,
+        news_reasons=news_reasons[:3] if news_reasons else [],  # 只使用新聞原因
+        technical_reasons=technical_reasons[:2] if technical_reasons else [],  # 技術分析原因作為補充
+    )
+    
+    # 過濾新聞原因：移除以 "Analysis:" 開頭的 ETF 情感分析
+    filtered_news_reasons = [
+        reason for reason in news_reasons
+        if not reason.strip().startswith("Analysis:")
+    ]
+    
+    # 組合最終原因：AI 解釋 + 技術原因 + 過濾後的新聞原因
+    final_reasons = [ai_explanation]
+    if technical_reasons:
+        final_reasons.extend(technical_reasons[:1])  # 添加第一個技術原因
+    if filtered_news_reasons:
+        final_reasons.extend(filtered_news_reasons[:3])  # 添加前3個過濾後的新聞原因
+    elif not any_news:
+        final_reasons.append("當前市場無顯著宏觀消息")
+    
     return {
-        "market_regime": regime,
-        "market_cycle": "Bull" if regime == "Bullish" else "Bear" if regime == "Bearish" else "Base",
-        "market_score": avg_score,
-        "market_bias": bias,
-        "market_reason": [r for r in reasons if r],
+        "market_cycle": market_cycle,
+        "market_score": market_score,
+        "market_bias": market_bias,
+        "market_reason": final_reasons[:5],  # 限制最多5個原因
     }
+
+
+def _interpret_ratio_signal(
+    ratio_name: str, 
+    ratio_value: Optional[float], 
+    ratio_ma20: Optional[float] = None
+) -> Tuple[str, str]:
+    """
+    解釋相對強弱比率的含義（使用相對均線方法）
+    
+    改進：不再使用絕對閾值（如 1.0），而是使用相對均線
+    - 如果當前比率 > 20日均線 → 強勢
+    - 如果當前比率 < 20日均線 → 弱勢
+    
+    Args:
+        ratio_name: 比率名稱
+        ratio_value: 當前比率值
+        ratio_ma20: 20日均線比率值（可選）
+    
+    Returns:
+        (status_icon, interpretation) - 狀態圖標和解釋
+    """
+    if ratio_value is None:
+        return "🟡", "數據不足"
+    
+    # 如果有均線數據，使用相對均線判斷
+    if ratio_ma20 is not None and ratio_ma20 > 0:
+        deviation = (ratio_value - ratio_ma20) / ratio_ma20  # 偏離度（百分比）
+        
+        if ratio_name == "qqq_spy":
+            if deviation > 0.02:  # 當前比率 > 均線 2%
+                return "🟢", f"成長股領跑（當前 {ratio_value:.3f} vs 均線 {ratio_ma20:.3f}）"
+            elif deviation < -0.02:  # 當前比率 < 均線 2%
+                return "🔴", f"成長股落後（當前 {ratio_value:.3f} vs 均線 {ratio_ma20:.3f}）"
+            else:
+                return "🟡", f"成長與基準均衡（當前 {ratio_value:.3f} vs 均線 {ratio_ma20:.3f}）"
+        
+        elif ratio_name == "spy_tlt":
+            if deviation > 0.05:  # 當前比率 > 均線 5%
+                return "🟢", f"風險偏好強勁（當前 {ratio_value:.3f} vs 均線 {ratio_ma20:.3f}）"
+            elif deviation < -0.05:  # 當前比率 < 均線 5%
+                return "🔴", f"避險情緒上升（當前 {ratio_value:.3f} vs 均線 {ratio_ma20:.3f}）"
+            else:
+                return "🟡", f"股債膠著（當前 {ratio_value:.3f} vs 均線 {ratio_ma20:.3f}）"
+        
+        elif ratio_name == "dia_qqq":
+            if deviation > 0.05:  # 當前比率 > 均線 5%
+                return "🟢", f"價值股領跑（當前 {ratio_value:.3f} vs 均線 {ratio_ma20:.3f}）"
+            elif deviation < -0.05:  # 當前比率 < 均線 5%
+                return "🔴", f"成長股領跑（當前 {ratio_value:.3f} vs 均線 {ratio_ma20:.3f}）"
+            else:
+                return "🟡", f"價值成長均衡（當前 {ratio_value:.3f} vs 均線 {ratio_ma20:.3f}）"
+    
+    # 如果沒有均線數據，回退到絕對閾值（向後兼容）
+    if ratio_name == "qqq_spy":
+        if ratio_value > 1.02:
+            return "🟢", f"成長股領跑（{ratio_value:.3f}）"
+        elif ratio_value < 0.98:
+            return "🔴", f"成長股落後（{ratio_value:.3f}）"
+        else:
+            return "🟡", f"成長與基準均衡（{ratio_value:.3f}）"
+    
+    elif ratio_name == "spy_tlt":
+        if ratio_value > 1.05:
+            return "🟢", f"風險偏好強勁（{ratio_value:.3f}）"
+        elif ratio_value < 0.95:
+            return "🔴", f"避險情緒上升（{ratio_value:.3f}）"
+        else:
+            return "🟡", f"股債膠著（{ratio_value:.3f}）"
+    
+    elif ratio_name == "dia_qqq":
+        if ratio_value > 1.05:
+            return "🟢", f"價值股領跑（{ratio_value:.3f}）"
+        elif ratio_value < 0.95:
+            return "🔴", f"成長股領跑（{ratio_value:.3f}）"
+        else:
+            return "🟡", f"價值成長均衡（{ratio_value:.3f}）"
+    
+    return "🟡", f"比率 {ratio_value:.3f}"
+
+
+def _generate_market_cycle_explanation(
+    market_cycle: str,
+    market_score: int,
+    market_bias: int,
+    equity_avg: int,
+    bond_avg: int,
+    spy_score: int,
+    qqq_score: int,
+    tlt_score: int,
+    ratios: Dict[str, float],
+    news_reasons: List[str],
+    technical_reasons: List[str],
+) -> str:
+    """
+    使用 AI 生成 Bloomberg 風格的市場週期解釋
+    
+    Returns:
+        Bloomberg Terminal 風格的市場簡報
+    """
+    # 解釋相對強弱比率（使用相對均線）
+    ratio_ma20 = ratios.get("_ma20", {})
+    qqq_spy_icon, qqq_spy_desc = _interpret_ratio_signal(
+        "qqq_spy", 
+        ratios.get("qqq_spy"),
+        ratio_ma20.get("qqq_spy")
+    )
+    spy_tlt_icon, spy_tlt_desc = _interpret_ratio_signal(
+        "spy_tlt", 
+        ratios.get("spy_tlt"),
+        ratio_ma20.get("spy_tlt")
+    )
+    dia_qqq_icon, dia_qqq_desc = _interpret_ratio_signal(
+        "dia_qqq", 
+        ratios.get("dia_qqq"),
+        ratio_ma20.get("dia_qqq")
+    )
+    
+    # 判斷資產強弱
+    asset_strength = ""
+    if equity_avg > bond_avg + 5:
+        asset_strength = f"股票明顯強於債券（{equity_avg} vs {bond_avg}）"
+    elif bond_avg > equity_avg + 5:
+        asset_strength = f"債券明顯強於股票（{bond_avg} vs {equity_avg}）"
+    else:
+        asset_strength = f"股債膠著（股票 {equity_avg} vs 債券 {bond_avg}）"
+    
+    # 構建數據摘要（預處理，讓 AI 更容易理解）
+    data_summary = f"""
+**市場數據摘要：**
+- 市場週期：{market_cycle}（Bull=牛市, Bear=熊市, Base=震盪整理）
+- 市場總分：{market_score}/100（{'偏強' if market_score >= 60 else '偏弱' if market_score <= 40 else '中性'}）
+- 市場偏差：{market_bias}（{'偏多' if market_bias > 0 else '偏空' if market_bias < 0 else '中性'}）
+
+**資產強弱：**
+- {asset_strength}
+
+**關鍵訊號解讀：**
+- {qqq_spy_icon} **成長 vs 基準 (QQQ/SPY):** {qqq_spy_desc}
+- {spy_tlt_icon} **風險偏好 (SPY/TLT):** {spy_tlt_desc}
+- {dia_qqq_icon} **風格輪動 (DIA/QQQ):** {dia_qqq_desc}
+
+**個別 ETF 分數：**
+- SPY (基準): {spy_score}/100
+- QQQ (成長): {qqq_score}/100
+- TLT (債券): {tlt_score}/100
+"""
+    
+    # 構建技術分析關鍵信號
+    technical_signals = ""
+    if technical_reasons:
+        technical_signals = "\n**技術分析關鍵信號：**\n" + "\n".join(f"- {r}" for r in technical_reasons[:2])
+    
+    # 構建 prompt
+    prompt = f"""# Role
+You are a senior market analyst at a top-tier investment bank (like Bloomberg or Goldman Sachs). Your job is to interpret technical market data into a concise, professional, and actionable summary using Bloomberg Terminal style.
+
+# Input Data
+{data_summary}
+{technical_signals}
+
+# Task
+Generate a "Bloomberg Terminal Style" market brief in Traditional Chinese (繁體中文).
+
+# Output Rules (Strictly Follow)
+1. **Tone:** Professional, objective, concise. No "Hello user" or fluffy intros.
+2. **Structure (必須包含以下部分):**
+   - **Header:** 📊 Emoji + Cycle Name (e.g., "📊 市場週期診斷：震盪整理 (Base / Neutral)")
+   - **Core View:** One sentence summarizing the "Conflict" (e.g., "市場進入方向不明的「拉鋸戰」。儘管資金尚未恐慌性逃離股市，但缺乏關鍵領漲板塊，導致大盤上攻無力。")
+   - **Key Signals:** Use bullet points with status icons:
+     * 🔴 (Bearish/Weak): 負面訊號，拖累市場
+     * 🟢 (Bullish/Strong): 正面訊號，支持市場
+     * 🟡 (Neutral/Mixed): 中性訊號，膠著狀態
+   - **Conclusion:** One actionable sentence with strategy recommendation (e.g., "策略建議：觀望 (Hold)。在 QQQ 重回強勢或市場總分突破 60 之前，不宜激進加倉。")
+3. **Data Interpretation Logic:**
+   - Do NOT just list the numbers (e.g., "Ratio is 0.896").
+   - INSTEAD, explain the meaning: "QQQ < SPY" means "Risk appetite is fading" or "Tech is dragging the market".
+   - "Stocks (55) ≈ Bonds (52)" means "No clear asset class dominance".
+   - Focus on CAUSAL relationships: Why is the cycle Base? What causes market_bias to be {market_bias}?
+4. **Logic Consistency Check (一致性檢查):**
+   - Before generating output, check for contradictions in the signals:
+     * If QQQ/SPY implies "Weak Tech" BUT DIA/QQQ implies "Strong Tech" (成長股領跑), explicitly mention this divergence as "市場分歧 (Market Confusion)" or "風格輪動矛盾".
+     * If SPY/TLT shows "Strong Risk Appetite" BUT equity_avg is low, explain this as "資金配置異常" or "技術面與基本面背離".
+     * Do NOT blindly trust individual ratios; interpret the *conflict* or *divergence* as the main insight when signals contradict.
+   - If signals are consistent, explain the unified trend clearly.
+   - If signals conflict, prioritize explaining WHY there is confusion (e.g., "市場內部輪動混亂" or "資金流向不明確").
+5. **Length:** Keep total output under 250 characters (繁體中文字符).
+6. **Format:** Use markdown formatting with **bold** for emphasis.
+
+# Generate Output (in Traditional Chinese 繁體中文)
+"""
+    
+    try:
+        explanation = call_deepseek(
+            "你是一名頂級投資銀行的資深市場分析師，擅長使用 Bloomberg Terminal 風格撰寫簡潔專業的市場簡報。",
+            prompt,
+            temperature=0.4
+        )
+        # 清理和截斷
+        explanation = explanation.strip()
+        # 移除可能的 markdown 代碼塊標記
+        if explanation.startswith("```"):
+            explanation = explanation.split("```")[1]
+            if explanation.startswith("markdown") or explanation.startswith("md"):
+                explanation = explanation.split("\n", 1)[1] if "\n" in explanation else explanation
+        explanation = explanation.strip()
+        
+        # 確保長度合理（Bloomberg 風格應該簡潔）
+        if len(explanation) > 300:
+            # 嘗試截斷到最後一個完整句子
+            sentences = explanation.split("。")
+            truncated = ""
+            for sentence in sentences:
+                if len(truncated + sentence + "。") <= 300:
+                    truncated += sentence + "。"
+                else:
+                    break
+            explanation = truncated if truncated else explanation[:297] + "..."
+        
+        return explanation if explanation else f"📊 市場週期診斷：{market_cycle}。市場總分 {market_score}/100，偏差 {market_bias}。{asset_strength}，{qqq_spy_desc}，{spy_tlt_desc}。"
+    except Exception as e:
+        logger.warning(f"Error generating AI explanation: {e}")
+        # 回退到簡單的 Bloomberg 風格解釋
+        cycle_name_map = {"Bull": "牛市", "Bear": "熊市", "Base": "震盪整理"}
+        bias_desc = "偏多" if market_bias > 0 else "偏空" if market_bias < 0 else "中性"
+        return f"📊 市場週期診斷：{cycle_name_map.get(market_cycle, market_cycle)}。核心觀點：{asset_strength}，市場總分 {market_score}/100，偏差 {market_bias}（{bias_desc}）。關鍵訊號：{qqq_spy_desc}，{spy_tlt_desc}。策略建議：{'積極' if market_bias > 0 else '謹慎' if market_bias < 0 else '觀望'}。"
 
 
 def generate_analysis(symbol: str, market_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -376,7 +952,7 @@ def generate_analysis(symbol: str, market_context: Optional[Dict[str, Any]] = No
     market_prompt = ""
     if market_context and not is_etf_symbol(symbol):
         market_prompt = (
-            f"- Market Regime: {market_context.get('market_regime')} "
+            f"- Market Cycle: {market_context.get('market_cycle')} "
             f"(Score {market_context.get('market_score')}/100, Bias {applied_market_bias})\n"
         )
 
