@@ -3,7 +3,7 @@
 from typing import Dict, List, Any
 
 from markets.models import Stock
-from analysis.models import RagDocument, EfsAlphaFactor, EfsAlphaEvaluation
+from analysis.models import RagDocument, EfsAlphaFactor, EfsAlphaEvaluation, MarketContext
 from analysis.config.constants import ETF_SYMBOLS
 from analysis.services.analysis import generate_and_store_analysis, build_market_context
 from analysis.services.efs_evolution import evolve_factors
@@ -92,6 +92,31 @@ def run_stock_analysis() -> Dict[str, Any]:
         "failed": len(errors),
         "results": results,
         "errors": errors
+    }
+
+
+def update_market_context() -> Dict[str, Any]:
+    """
+    更新市場環境數據
+    
+    Returns:
+        dict with market context data
+    """
+    market_context = build_market_context()
+    
+    # 保存到數據庫（只保留最新的一條記錄）
+    MarketContext.objects.all().delete()  # 刪除舊記錄
+    MarketContext.objects.create(
+        market_regime=market_context.get("market_regime", "Neutral"),
+        market_cycle=market_context.get("market_cycle", "Base"),
+        market_score=market_context.get("market_score", 50),
+        market_bias=market_context.get("market_bias", 0),
+        market_reason=market_context.get("market_reason", []),
+    )
+    
+    return {
+        "updated": True,
+        "market_context": market_context,
     }
 
 

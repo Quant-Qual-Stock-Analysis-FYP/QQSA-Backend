@@ -649,9 +649,6 @@ def generate_analysis(symbol: str, market_context: Optional[Dict[str, Any]] = No
         
         # ========== 投资策略 ==========
         "strategy": strategy,
-        
-        # ========== 市场环境 ==========
-        "market_context": market_context or {},
     }
     return payload
 

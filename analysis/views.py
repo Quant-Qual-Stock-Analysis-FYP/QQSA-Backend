@@ -7,9 +7,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from markets.models import Stock
-from .models import AnalysisResult, RagDocument, RagDocumentFundamental
+from .models import AnalysisResult, RagDocument, RagDocumentFundamental, MarketContext
 from .services.portfolio import build_sparse_portfolio
 from .services.rag import _build_embedding
+from .services.analysis import build_market_context
 from .utils.validators import ValidationError, validate_symbol
 
 logger = logging.getLogger(__name__)
@@ -240,6 +241,32 @@ class StockScoresListView(APIView):
                 {"error": "Internal server error"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class MarketContextView(APIView):
+    """返回市場環境數據"""
+
+    def get(self, request):
+        try:
+            # 嘗試從數據庫獲取最新的 market_context
+            market_context_obj = MarketContext.objects.first()
+            
+            if market_context_obj:
+                # 從數據庫返回
+                payload = market_context_obj.to_dict()
+            else:
+                # 如果數據庫中沒有，則構建新的（作為後備）
+                market_context = build_market_context()
+                payload = market_context
+            
+            return Response(payload, status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"Error in MarketContextView: {e}", exc_info=True)
+            return Response(
+                {"error": "Internal server error"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
 
 class PortfolioOptimizationView(APIView):
     """稀疏组合优化：基于overall_score和风险惩罚"""

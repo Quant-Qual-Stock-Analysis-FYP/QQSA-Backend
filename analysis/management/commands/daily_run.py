@@ -11,14 +11,14 @@ from datetime import datetime
 from django.core.management.base import BaseCommand
 
 from markets.services.update import update_stock_details, update_stock_news
-from analysis.services.daily_tasks import run_efs_evolution, run_stock_analysis, update_rankings
+from analysis.services.daily_tasks import run_efs_evolution, run_stock_analysis, update_rankings, update_market_context
 from chatbot.services import update_recommended_questions
 
 logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
-    help = "Run all daily tasks: update stock details, news, EFS evolution, recommended questions, stock analysis, and rankings."
+    help = "Run all daily tasks: update stock details, news, EFS evolution, recommended questions, market context, stock analysis, and rankings."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -40,6 +40,11 @@ class Command(BaseCommand):
             '--skip-questions',
             action='store_true',
             help='Skip updating recommended questions'
+        )
+        parser.add_argument(
+            '--skip-market-context',
+            action='store_true',
+            help='Skip updating market context'
         )
         parser.add_argument(
             '--skip-analysis',
@@ -65,7 +70,7 @@ class Command(BaseCommand):
 
         # 1. Update Stock Details
         if not options.get('skip_details'):
-            self.stdout.write(self.style.WARNING("\n[1/6] Updating Stock Details..."))
+            self.stdout.write(self.style.WARNING("\n[1/7] Updating Stock Details..."))
             try:
                 details_result = update_stock_details()
                 results["tasks"]["stock_details"] = details_result
@@ -87,12 +92,12 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.ERROR(f"  ✗ {error_msg}"))
                 logger.error(error_msg, exc_info=True)
         else:
-            self.stdout.write(self.style.WARNING("\n[1/6] Skipping Stock Details Update"))
+            self.stdout.write(self.style.WARNING("\n[1/7] Skipping Stock Details Update"))
             results["tasks"]["stock_details"] = {"skipped": True}
 
         # 2. Update Stock News
         if not options.get('skip_news'):
-            self.stdout.write(self.style.WARNING("\n[2/6] Updating Stock News..."))
+            self.stdout.write(self.style.WARNING("\n[2/7] Updating Stock News..."))
             try:
                 news_result = update_stock_news(days_back=3)
                 results["tasks"]["stock_news"] = news_result
@@ -115,12 +120,12 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.ERROR(f"  ✗ {error_msg}"))
                 logger.error(error_msg, exc_info=True)
         else:
-            self.stdout.write(self.style.WARNING("\n[2/6] Skipping Stock News Update"))
+            self.stdout.write(self.style.WARNING("\n[2/7] Skipping Stock News Update"))
             results["tasks"]["stock_news"] = {"skipped": True}
 
         # 3. Run EFS Evolution
         if not options.get('skip_evolution'):
-            self.stdout.write(self.style.WARNING("\n[3/6] Running EFS Evolution..."))
+            self.stdout.write(self.style.WARNING("\n[3/7] Running EFS Evolution..."))
             try:
                 evolution_result = run_efs_evolution(
                     generation_size=6,
@@ -152,12 +157,12 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.ERROR(f"  ✗ {error_msg}"))
                 logger.error(error_msg, exc_info=True)
         else:
-            self.stdout.write(self.style.WARNING("\n[3/6] Skipping EFS Evolution"))
+            self.stdout.write(self.style.WARNING("\n[3/7] Skipping EFS Evolution"))
             results["tasks"]["efs_evolution"] = {"skipped": True}
 
         # 4. Update Recommended Questions
         if not options.get('skip_questions'):
-            self.stdout.write(self.style.WARNING("\n[4/6] Updating Recommended Questions..."))
+            self.stdout.write(self.style.WARNING("\n[4/7] Updating Recommended Questions..."))
             try:
                 questions_result = update_recommended_questions(limit=10)
                 results["tasks"]["recommended_questions"] = questions_result
@@ -181,12 +186,37 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.ERROR(f"  ✗ {error_msg}"))
                 logger.error(error_msg, exc_info=True)
         else:
-            self.stdout.write(self.style.WARNING("\n[4/6] Skipping Recommended Questions Update"))
+            self.stdout.write(self.style.WARNING("\n[4/7] Skipping Recommended Questions Update"))
             results["tasks"]["recommended_questions"] = {"skipped": True}
 
-        # 5. Run Stock Analysis
+        # 5. Update Market Context
+        if not options.get('skip_market_context'):
+            self.stdout.write(self.style.WARNING("\n[5/7] Updating Market Context..."))
+            try:
+                market_context_result = update_market_context()
+                results["tasks"]["market_context"] = market_context_result
+                mc = market_context_result.get("market_context", {})
+                self.stdout.write(
+                    self.style.SUCCESS(
+                        f"  ✓ Regime: {mc.get('market_regime', 'N/A')}, "
+                        f"Cycle: {mc.get('market_cycle', 'N/A')}, "
+                        f"Score: {mc.get('market_score', 'N/A')}, "
+                        f"Bias: {mc.get('market_bias', 'N/A')}"
+                    )
+                )
+                logger.info(f"Market context updated: {market_context_result}")
+            except Exception as e:
+                error_msg = f"Error updating market context: {str(e)}"
+                results["tasks"]["market_context"] = {"error": error_msg}
+                self.stdout.write(self.style.ERROR(f"  ✗ {error_msg}"))
+                logger.error(error_msg, exc_info=True)
+        else:
+            self.stdout.write(self.style.WARNING("\n[5/7] Skipping Market Context Update"))
+            results["tasks"]["market_context"] = {"skipped": True}
+
+        # 6. Run Stock Analysis
         if not options.get('skip_analysis'):
-            self.stdout.write(self.style.WARNING("\n[5/6] Running Stock Analysis..."))
+            self.stdout.write(self.style.WARNING("\n[6/7] Running Stock Analysis..."))
             try:
                 analysis_result = run_stock_analysis()
                 results["tasks"]["stock_analysis"] = {
@@ -213,12 +243,12 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.ERROR(f"  ✗ {error_msg}"))
                 logger.error(error_msg, exc_info=True)
         else:
-            self.stdout.write(self.style.WARNING("\n[5/6] Skipping Stock Analysis"))
+            self.stdout.write(self.style.WARNING("\n[6/7] Skipping Stock Analysis"))
             results["tasks"]["stock_analysis"] = {"skipped": True}
 
-        # 6. Update Rankings
+        # 7. Update Rankings
         if not options.get('skip_rankings'):
-            self.stdout.write(self.style.WARNING("\n[6/6] Updating Rankings..."))
+            self.stdout.write(self.style.WARNING("\n[7/7] Updating Rankings..."))
             try:
                 ranking_result = update_rankings()
                 results["tasks"]["rankings"] = ranking_result
@@ -239,7 +269,7 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.ERROR(f"  ✗ {error_msg}"))
                 logger.error(error_msg, exc_info=True)
         else:
-            self.stdout.write(self.style.WARNING("\n[6/6] Skipping Rankings Update"))
+            self.stdout.write(self.style.WARNING("\n[7/7] Skipping Rankings Update"))
             results["tasks"]["rankings"] = {"skipped": True}
 
         # Summary
