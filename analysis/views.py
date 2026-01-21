@@ -46,7 +46,6 @@ class AnalysisResultListView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-
 class AnalysisResultDetailView(APIView):
     """返回特定股票的AI分析结果"""
 
@@ -96,7 +95,6 @@ class AnalysisResultDetailView(APIView):
                 {"error": "Internal server error"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
 
 class UploadRagDocumentView(APIView):
     """允许手动上传RAG文档"""
@@ -149,7 +147,6 @@ class UploadRagDocumentView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-
 class UploadRagFundamentalDocumentView(APIView):
     """允许手动上传基本面RAG文档"""
 
@@ -201,6 +198,48 @@ class UploadRagFundamentalDocumentView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+class StockScoresListView(APIView):
+    """返回所有股票的簡化評分數據"""
+
+    def get(self, request):
+        try:
+            # 优化：使用select_related和only减少查询
+            results = (
+                AnalysisResult.objects.select_related("stock")
+                .only("result", "stock_rank", "etf_rank", "stock__symbol")
+                .all()
+            )
+            payload = []
+            for res in results:
+                try:
+                    if not isinstance(res.result, dict):
+                        continue
+                    
+                    result = res.result
+                    scores = result.get("scores", {})
+                    
+                    # 提取所需字段
+                    payload.append({
+                        "stock_symbol": res.stock.symbol,
+                        "stock_rank": res.stock_rank,
+                        "etf_rank": res.etf_rank,
+                        "overall_score": scores.get("overall_score"),
+                        "risk_score": scores.get("stability"),  
+                        "sentiment_score": scores.get("sentiment"),
+                        "technical_score": scores.get("technical"),
+                        "fundamental_score": scores.get("fundamental"), 
+                    })
+                except Exception as e:
+                    logger.debug(f"Error processing analysis result {res.id}: {e}")
+                    continue
+            
+            return Response(payload, status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"Error in StockScoresListView: {e}", exc_info=True)
+            return Response(
+                {"error": "Internal server error"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 class PortfolioOptimizationView(APIView):
     """稀疏组合优化：基于overall_score和风险惩罚"""
