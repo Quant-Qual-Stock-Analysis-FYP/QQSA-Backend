@@ -2,15 +2,28 @@
 
 from django.contrib import admin
 
-from .models import ChatMessage, RecommendedQuestion
+from .models import ChatRoom, ChatMessage, RecommendedQuestion
+
+
+@admin.register(ChatRoom)
+class ChatRoomAdmin(admin.ModelAdmin):
+    """聊天室管理"""
+    list_display = ('id', 'user', 'title', 'message_count', 'created_at', 'updated_at')
+    list_filter = ('created_at', 'updated_at')
+    search_fields = ('user__username', 'title')
+    readonly_fields = ('created_at', 'updated_at')
+    
+    def message_count(self, obj):
+        return obj.messages.count()
+    message_count.short_description = "消息数量"
 
 
 @admin.register(ChatMessage)
 class ChatMessageAdmin(admin.ModelAdmin):
     """聊天消息管理"""
-    list_display = ('user', 'role', 'content_preview', 'timestamp')
+    list_display = ('chat_room', 'role', 'content_preview', 'timestamp')
     list_filter = ('role', 'timestamp')
-    search_fields = ('user__username', 'content')
+    search_fields = ('chat_room__user__username', 'chat_room__title', 'content')
     readonly_fields = ('timestamp',)
     
     def content_preview(self, obj):
