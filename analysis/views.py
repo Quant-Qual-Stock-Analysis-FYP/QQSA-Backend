@@ -2,6 +2,8 @@
 
 import logging
 
+from django.conf import settings
+from django.core.management import call_command
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -310,6 +312,29 @@ class PortfolioOptimizationView(APIView):
             logger.error(f"Error in PortfolioOptimizationView: {e}", exc_info=True)
             return Response(
                 {"error": "Internal server error"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class RunDailyView(APIView):
+    """触发 daily_run 管理命令（API Key 保护）。"""
+
+    def post(self, request):
+        api_key = request.headers.get("X-API-KEY", "")
+        expected_key = getattr(settings, "RUN_DAILY_API_KEY", "")
+        if not expected_key or api_key != expected_key:
+            return Response(
+                {"error": "Unauthorized"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            call_command("daily_run")
+            return Response({"status": "ok"}, status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"Error running daily_run: {e}", exc_info=True)
+            return Response(
+                {"error": "Failed to run daily_run"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 

@@ -8,6 +8,7 @@ from .views import (
     PortfolioOptimizationView,
     StockScoresListView,
     MarketContextView,
+    RunDailyView,
 )
 
 urlpatterns = [
@@ -18,5 +19,6 @@ urlpatterns = [
     path("documents/", UploadRagDocumentView.as_view(), name="upload-rag-document"),
     path("documents/fundamental/", UploadRagFundamentalDocumentView.as_view(), name="upload-rag-fundamental-document"),
     path("portfolio/", PortfolioOptimizationView.as_view(), name="portfolio-optimization"),
+    path("run-daily/", RunDailyView.as_view(), name="run-daily"),
 ]
 

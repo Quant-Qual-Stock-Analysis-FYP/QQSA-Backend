@@ -165,6 +165,8 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
 ]
 
+ALLOWED_HOSTS =['host.docker.internal']
+
 CORS_ALLOW_CREDENTIALS = True 
 
 # JWT 設定
@@ -186,3 +188,4 @@ SIMPLE_JWT = {
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
 DEEPSEEK_BASE_URL = os.getenv('DEEPSEEK_BASE_URL', 'https://api.deepseek.com')
 FINNHUB_API_KEY = os.getenv('FINNHUB_API_KEY')
+RUN_DAILY_API_KEY = os.getenv('RUN_DAILY_API_KEY', '')
