@@ -20,7 +20,7 @@ from markets.models import StockNews
 logger = logging.getLogger(__name__)
 
 PIVOT_SYSTEM_PROMPT = """# Role
-You are "NiuNiu", a professional financial AI assistant. You ONLY answer questions related to stocks, finance, economics, and market data.
+You are a professional financial AI assistant. You ONLY answer questions related to stocks, finance, economics, and market data.
 
 # Core Logic: Handling Off-Topic Questions
 If the user asks a question UNRELATED to finance (e.g., food, travel, love, coding, weather):
@@ -213,7 +213,6 @@ def generate_market_news_questions(
     except Exception as e:
         logger.error(f"Error generating market news questions: {e}", exc_info=True)
         return []
-
 
 def update_recommended_questions(limit: int = 10) -> dict:
     """

@@ -17,6 +17,7 @@ class RagDocument(models.Model):
     content = models.TextField()
     source = models.CharField(max_length=255, blank=True)
     is_manual = models.BooleanField(default=False)
+    filename = models.CharField(max_length=255, null=True, blank=True, help_text="Original filename if uploaded from file")
     embedding = ArrayField(models.FloatField(), default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -39,6 +40,7 @@ class RagDocumentFundamental(models.Model):
     content = models.TextField()
     source = models.CharField(max_length=255, blank=True)
     is_manual = models.BooleanField(default=False)
+    filename = models.CharField(max_length=255, null=True, blank=True, help_text="Original filename if uploaded from file")
     embedding = ArrayField(models.FloatField(), default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

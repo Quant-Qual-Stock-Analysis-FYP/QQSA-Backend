@@ -9,7 +9,10 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 ## 2. Install Dependencies
 ```bash
 pip install -r requirements.txt
+# Upgrade to the latest version of sentence-transformers (recommended)
+pip install -U sentence-transformers
 ```
+> The above command will install the latest version of sentence-transformers.
 
 ## 3. Environment Variables
 Create a `.env` file in the backend directory with:

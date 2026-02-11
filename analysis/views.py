@@ -12,6 +12,7 @@ from .services.portfolio import build_sparse_portfolio
 from .services.rag import _build_embedding
 from .services.analysis import build_market_context
 from .utils.validators import ValidationError, validate_symbol
+from .utils.document_parser import extract_text_from_file
 
 logger = logging.getLogger(__name__)
 
@@ -98,33 +99,103 @@ class AnalysisResultDetailView(APIView):
             )
 
 class UploadRagDocumentView(APIView):
-    """允许手动上传RAG文档"""
+    """统一的上传RAG文档视图（支持文本内容或文件上传：docx, pdf）
+    
+    支持两种请求方式：
+    1. multipart/form-data: 上传文件时使用，字段：symbol, file
+    2. application/json: 发送文本内容时使用，字段：symbol, content
+    
+    通过 doc_type 参数区分保存到不同表：
+    - "sentiment" 或默认：保存到 RagDocument
+    - "fundamental"：保存到 RagDocumentFundamental
+    """
 
-    def post(self, request):
-        symbol = request.data.get("symbol")
-        content = request.data.get("content")
-        source = request.data.get("source", "manual")
+    def post(self, request, **kwargs):
+        file = request.FILES.get("file")
         
-        # 输入验证
-        if not symbol or not content:
+        # 从 URL kwargs 获取 doc_type，默认为 "sentiment"
+        doc_type = self.kwargs.get("doc_type", "sentiment")
+        doc_type = doc_type.lower() if doc_type else "sentiment"
+        if doc_type not in ["sentiment", "fundamental"]:
             return Response(
-                {"error": "symbol and content are required"},
+                {"error": "doc_type must be 'sentiment' or 'fundamental'"},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        is_valid, error_msg = validate_symbol(symbol)
-        if not is_valid:
-            return Response(
-                {"error": error_msg or "Invalid symbol"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        # 根据是否有文件上传，决定处理方式
+        if file:
+            # 文件上传模式：使用 multipart/form-data
+            symbol = request.data.get("symbol")
+            
+            if not symbol:
+                return Response(
+                    {"error": "symbol is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            is_valid, error_msg = validate_symbol(symbol)
+            if not is_valid:
+                return Response(
+                    {"error": error_msg or "Invalid symbol"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # 验证文件类型
+            filename = file.name.lower()
+            if not (filename.endswith('.docx') or filename.endswith('.pdf')):
+                return Response(
+                    {"error": "file must be .docx or .pdf"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # 提取文本内容
+            try:
+                extracted_text = extract_text_from_file(file, file.name)
+                if not extracted_text or not extracted_text.strip():
+                    return Response(
+                        {"error": "failed to extract text from file or file is empty"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                content = extracted_text.strip()
+            except Exception as e:
+                logger.error(f"Error extracting text from file: {e}", exc_info=True)
+                return Response(
+                    {"error": "Failed to extract text from file"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        else:
+            # 文本内容模式：使用 application/json
+            symbol = request.data.get("symbol")
+            content = request.data.get("content")
+            
+            if not symbol:
+                return Response(
+                    {"error": "symbol is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            if not content:
+                return Response(
+                    {"error": "content is required when no file is uploaded"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            is_valid, error_msg = validate_symbol(symbol)
+            if not is_valid:
+                return Response(
+                    {"error": error_msg or "Invalid symbol"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            if not isinstance(content, str) or not content.strip():
+                return Response(
+                    {"error": "content must be a non-empty string"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            content = content.strip()
         
-        if not isinstance(content, str) or not content.strip():
-            return Response(
-                {"error": "content must be a non-empty string"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+        # 保存到数据库
         try:
             stock = Stock.objects.filter(symbol=symbol.upper()).first()
             if not stock:
@@ -133,13 +204,29 @@ class UploadRagDocumentView(APIView):
                     status=status.HTTP_404_NOT_FOUND
                 )
 
-            RagDocument.objects.create(
-                stock=stock,
-                content=content.strip(),
-                source=str(source)[:255] if source else "manual",
-                is_manual=True,
-                embedding=_build_embedding(content),
-            )
+            # 根据 doc_type 选择对应的模型
+            # 如果有文件上传，保存文件名；否则filename为None
+            filename = file.name if file else None
+            
+            if doc_type == "fundamental":
+                RagDocumentFundamental.objects.create(
+                    stock=stock,
+                    content=content,
+                    source="manual",
+                    is_manual=True,
+                    filename=filename,
+                    embedding=_build_embedding(content),
+                )
+            else:  # sentiment (default)
+                RagDocument.objects.create(
+                    stock=stock,
+                    content=content,
+                    source="manual",
+                    is_manual=True,
+                    filename=filename,
+                    embedding=_build_embedding(content),
+                )
+            
             return Response({"status": "ok"}, status=status.HTTP_201_CREATED)
         except Exception as e:
             logger.error(f"Error uploading RAG document: {e}", exc_info=True)
@@ -148,56 +235,105 @@ class UploadRagDocumentView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-class UploadRagFundamentalDocumentView(APIView):
-    """允许手动上传基本面RAG文档"""
 
-    def post(self, request):
-        symbol = request.data.get("symbol")
-        content = request.data.get("content")
-        source = request.data.get("source", "manual")
+class ListManualRagDocumentsView(APIView):
+    """列出手动上传的RAG文档（仅返回有文件名的文档）
+    
+    通过 doc_type 参数区分：
+    - "sentiment"：返回 RagDocument 中的手动上传文件
+    - "fundamental"：返回 RagDocumentFundamental 中的手动上传文件
+    """
+
+    def get(self, request, **kwargs):
+        # 从 URL kwargs 获取 doc_type
+        doc_type = self.kwargs.get("doc_type", "sentiment")
+        doc_type = doc_type.lower() if doc_type else "sentiment"
         
-        # 输入验证
-        if not symbol or not content:
+        if doc_type not in ["sentiment", "fundamental"]:
             return Response(
-                {"error": "symbol and content are required"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        is_valid, error_msg = validate_symbol(symbol)
-        if not is_valid:
-            return Response(
-                {"error": error_msg or "Invalid symbol"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        if not isinstance(content, str) or not content.strip():
-            return Response(
-                {"error": "content must be a non-empty string"},
+                {"error": "doc_type must be 'sentiment' or 'fundamental'"},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
         try:
-            stock = Stock.objects.filter(symbol=symbol.upper()).first()
-            if not stock:
-                return Response(
-                    {"error": "stock not found"},
-                    status=status.HTTP_404_NOT_FOUND
-                )
-
-            RagDocumentFundamental.objects.create(
-                stock=stock,
-                content=content.strip(),
-                source=str(source)[:255] if source else "manual",
-                is_manual=True,
-                embedding=_build_embedding(content),
-            )
-            return Response({"status": "ok"}, status=status.HTTP_201_CREATED)
+            # 根据 doc_type 选择对应的模型
+            if doc_type == "fundamental":
+                documents = RagDocumentFundamental.objects.filter(
+                    is_manual=True,
+                    filename__isnull=False
+                ).select_related("stock").order_by("-created_at")
+            else:  # sentiment
+                documents = RagDocument.objects.filter(
+                    is_manual=True,
+                    filename__isnull=False
+                ).select_related("stock").order_by("-created_at")
+            
+            payload = []
+            for doc in documents:
+                payload.append({
+                    "id": doc.id,
+                    "symbol": doc.stock.symbol,
+                    "filename": doc.filename,
+                    "source": doc.source,
+                    "created_at": doc.created_at.isoformat(),
+                })
+            
+            return Response(payload, status=status.HTTP_200_OK)
         except Exception as e:
-            logger.error(f"Error uploading fundamental RAG document: {e}", exc_info=True)
+            logger.error(f"Error listing manual RAG documents: {e}", exc_info=True)
             return Response(
-                {"error": "Failed to upload document"},
+                {"error": "Failed to list documents"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class DeleteManualRagDocumentView(APIView):
+    """删除手动上传的RAG文档
+    
+    通过 doc_type 参数区分：
+    - "sentiment"：删除 RagDocument 中的文档
+    - "fundamental"：删除 RagDocumentFundamental 中的文档
+    """
+
+    def delete(self, request, doc_id, **kwargs):
+        # 从 URL kwargs 获取 doc_type
+        doc_type = self.kwargs.get("doc_type", "sentiment")
+        doc_type = doc_type.lower() if doc_type else "sentiment"
+        
+        if doc_type not in ["sentiment", "fundamental"]:
+            return Response(
+                {"error": "doc_type must be 'sentiment' or 'fundamental'"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # 根据 doc_type 选择对应的模型
+            if doc_type == "fundamental":
+                document = RagDocumentFundamental.objects.filter(
+                    id=doc_id,
+                    is_manual=True
+                ).first()
+            else:  # sentiment
+                document = RagDocument.objects.filter(
+                    id=doc_id,
+                    is_manual=True
+                ).first()
+            
+            if not document:
+                return Response(
+                    {"error": "Document not found or not a manual upload"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            document.delete()
+            return Response({"status": "ok"}, status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"Error deleting manual RAG document: {e}", exc_info=True)
+            return Response(
+                {"error": "Failed to delete document"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
 
 class StockScoresListView(APIView):
     """返回所有股票的簡化評分數據"""
