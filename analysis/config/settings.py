@@ -66,12 +66,11 @@ class PortfolioConfig:
 
 
 class EfsConfig:
-    """EFS因子进化配置"""
-    
-    # 因子生成
-    DEFAULT_GENERATION_SIZE = 6
+    """EFS factor evolution config."""
+
+    # Per-run: 3 new factors via LLM mutation from Alpha158 base
     DEFAULT_MUTATE_COUNT = 3
-    DEFAULT_TOP_K = 3
+    DEFAULT_TOP_K = 1  # Single active factor for technique score / LLM analysis
     LLM_TEMPERATURE = 0.4
     
     # 因子评估
@@ -139,9 +138,8 @@ def get_portfolio_config() -> Dict[str, Any]:
 
 
 def get_efs_config() -> Dict[str, Any]:
-    """获取EFS配置"""
+    """EFS config for API / admin."""
     return {
-        "generation_size": EfsConfig.DEFAULT_GENERATION_SIZE,
         "mutate_count": EfsConfig.DEFAULT_MUTATE_COUNT,
         "top_k": EfsConfig.DEFAULT_TOP_K,
         "top_m": EfsConfig.DEFAULT_TOP_M,

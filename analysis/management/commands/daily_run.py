@@ -128,9 +128,8 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("\n[3/7] Running EFS Evolution..."))
             try:
                 evolution_result = run_efs_evolution(
-                    generation_size=6,
-                    top_k=3,
                     mutate_count=3,
+                    top_k=1,
                     top_m=10,
                     min_samples=20,
                     window_months=12,

@@ -11,9 +11,8 @@ from analysis.services.ranking import update_all_rankings
 
 
 def run_efs_evolution(
-    generation_size: int = 6,
-    top_k: int = 3,
     mutate_count: int = 3,
+    top_k: int = 1,
     top_m: int = 10,
     min_samples: int = 20,
     window_months: int = 12,
@@ -21,20 +20,14 @@ def run_efs_evolution(
     step_days: int = 10,
 ) -> Dict[str, int]:
     """
-    執行 EFS 因子進化
-    
-    Returns:
-        dict with evolution statistics
+    Run EFS factor evolution: re-evaluate all factors, promote top 1, generate 3 new.
     """
-    # 清空舊的評估記錄（但保留因子本身）
     eval_count = EfsAlphaEvaluation.objects.count()
     EfsAlphaEvaluation.objects.all().delete()
-    
-    # 執行因子進化
+
     evolution_result = evolve_factors(
-        generation_size=generation_size,
-        top_k=top_k,
         mutate_count=mutate_count,
+        top_k=top_k,
         top_m=top_m,
         min_samples=min_samples,
         window_months=window_months,

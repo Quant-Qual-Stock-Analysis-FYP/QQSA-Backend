@@ -78,12 +78,18 @@ class EfsDataPoint(models.Model):
         return f"{self.stock.symbol} {self.date}"
 
 class EfsAlphaFactor(models.Model):
-    """LLM-generated alpha factor used in EFS evolution."""
+    """
+    Alpha factor used in EFS evolution.
+    Status: 'active' (top 1, used in LLM analysis) or 'archived'.
+    """
+
+    STATUS_ACTIVE = "active"
+    STATUS_ARCHIVED = "archived"
 
     name = models.CharField(max_length=128)
     description = models.TextField(blank=True)
     expression = models.TextField()
-    status = models.CharField(max_length=32, default="candidate")
+    status = models.CharField(max_length=32, default=STATUS_ARCHIVED)
     last_score = models.FloatField(null=True, blank=True)
     # 排名字段（基于 last_score）
     factor_rank = models.PositiveIntegerField(null=True, blank=True, help_text="因子排名（1-based，基于 last_score）")
