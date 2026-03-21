@@ -186,3 +186,8 @@ SIMPLE_JWT = {
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
 DEEPSEEK_BASE_URL = os.getenv('DEEPSEEK_BASE_URL', 'https://api.deepseek.com')
 FINNHUB_API_KEY = os.getenv('FINNHUB_API_KEY')
+
+# RAG / multipart uploads: Django rejects bodies larger than DATA_UPLOAD_MAX_MEMORY_SIZE
+# (default 2.5 MiB) with RequestDataTooBig. Allow up to 100 MiB; override via env if needed.
+_DATA_UPLOAD_MAX_MB = int(os.getenv('DATA_UPLOAD_MAX_MB', '100'))
+DATA_UPLOAD_MAX_MEMORY_SIZE = _DATA_UPLOAD_MAX_MB * 1024 * 1024
