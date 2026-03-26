@@ -8,7 +8,7 @@ from analysis.services.backtest import backtest_dynamic_factor_strategy
 
 
 class Command(BaseCommand):
-    help = "Run dynamic factor-only walk-forward backtest."
+    help = "Run dynamic factor-based walk-forward backtest."
 
     def add_arguments(self, parser):
         parser.add_argument("--start-date", type=str, required=True, help="Backtest start date, e.g. 2025-01-01")
@@ -22,6 +22,25 @@ class Command(BaseCommand):
         parser.add_argument("--top-m", type=int, default=10, help="Use average forward return of top M ranked stocks in factor evaluation")
         parser.add_argument("--min-samples", type=int, default=20, help="Minimum cross-sectional samples required for each evaluation date")
         parser.add_argument("--initial-capital", type=float, default=1000000.0, help="Initial capital in USD")
+        parser.add_argument(
+            "--ranking-mode",
+            type=str,
+            default="factor_only",
+            choices=["factor_only", "factor_risk"],
+            help="Stock ranking mode: factor only, or factor score blended with risk score",
+        )
+        parser.add_argument(
+            "--factor-weight",
+            type=float,
+            default=0.7,
+            help="Factor weight used in factor_risk ranking mode",
+        )
+        parser.add_argument(
+            "--risk-weight",
+            type=float,
+            default=0.3,
+            help="Risk score weight used in factor_risk ranking mode",
+        )
         parser.add_argument(
             "--summary-only",
             action="store_true",
@@ -61,6 +80,9 @@ class Command(BaseCommand):
                 top_m=options["top_m"],
                 min_samples=options["min_samples"],
                 initial_capital=options["initial_capital"],
+                ranking_mode=options["ranking_mode"],
+                factor_weight=options["factor_weight"],
+                risk_weight=options["risk_weight"],
             )
         except Exception as exc:
             raise CommandError(str(exc)) from exc

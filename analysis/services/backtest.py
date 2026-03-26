@@ -20,6 +20,8 @@ from .alpha158 import compute_alpha158_features
 
 MIN_FEATURE_BARS = 61
 DEFAULT_INITIAL_CAPITAL = 1_000_000.0
+RANKING_MODE_FACTOR_ONLY = "factor_only"
+RANKING_MODE_FACTOR_RISK = "factor_risk"
 
 
 @dataclass
@@ -108,6 +110,10 @@ def _safe_eval_expression(
     if math.isnan(value) or math.isinf(value):
         return None
     return value
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
 
 
 def _load_series_map(
@@ -323,20 +329,109 @@ def _select_best_factor_as_of(
     return best_factor, best_result
 
 
+def _normalize_rank_weights(
+    factor_weight: float,
+    risk_weight: float,
+) -> Tuple[float, float]:
+    if factor_weight < 0 or risk_weight < 0:
+        raise ValueError("factor_weight and risk_weight must be non-negative")
+    total = factor_weight + risk_weight
+    if total <= 0:
+        raise ValueError("factor_weight and risk_weight cannot both be zero")
+    return factor_weight / total, risk_weight / total
+
+
+def _percentile_score(values: Sequence[float], current: float) -> float:
+    if not values:
+        return 50.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return 100.0
+    rank = sum(1 for value in ordered if value <= current)
+    return ((rank - 1) / (len(ordered) - 1)) * 100.0
+
+
+def _historical_risk_score(series: PriceSeries, as_of: date) -> float:
+    idx = series.last_index_on_or_before(as_of)
+    if idx is None or idx + 1 < 30:
+        return 50.0
+
+    closes = series.closes[: idx + 1]
+    if len(closes) < 30:
+        return 50.0
+
+    vol_window = min(60, len(closes))
+    vol_closes = closes[-vol_window:]
+    daily_returns = [
+        (vol_closes[i] / vol_closes[i - 1]) - 1
+        for i in range(1, len(vol_closes))
+        if vol_closes[i - 1] != 0
+    ]
+    vol = pstdev(daily_returns) if len(daily_returns) >= 2 else 0.0
+
+    dd_window = min(120, len(closes))
+    dd_closes = closes[-dd_window:]
+    peak = dd_closes[0] if dd_closes else 0.0
+    max_drawdown = 0.0
+    for close in dd_closes[1:]:
+        if close > peak:
+            peak = close
+        if peak > 0:
+            drawdown = (peak - close) / peak
+            max_drawdown = max(max_drawdown, drawdown)
+
+    vol_score = _clamp(100 - (vol * 1000), 0, 100)
+    drawdown_score = _clamp(100 - (max_drawdown * 100), 0, 100)
+    return (vol_score * 0.6) + (drawdown_score * 0.4)
+
+
 def _rank_stocks_as_of(
     expression: str,
     rebalance_date: date,
     universe_series: Sequence[PriceSeries],
     top_n: int,
-) -> List[Tuple[PriceSeries, float]]:
-    ranked: List[Tuple[PriceSeries, float]] = []
+    ranking_mode: str = RANKING_MODE_FACTOR_ONLY,
+    factor_weight: float = 0.7,
+    risk_weight: float = 0.3,
+) -> List[Dict[str, object]]:
+    if ranking_mode not in {RANKING_MODE_FACTOR_ONLY, RANKING_MODE_FACTOR_RISK}:
+        raise ValueError(f"Unsupported ranking_mode: {ranking_mode}")
+
+    normalized_factor_weight, normalized_risk_weight = _normalize_rank_weights(
+        factor_weight,
+        risk_weight,
+    )
+
+    ranked: List[Dict[str, object]] = []
+    raw_factor_values: List[float] = []
     for series in universe_series:
         value = series.factor_value(rebalance_date, expression)
         if value is None:
             continue
-        ranked.append((series, value))
+        risk_score = _historical_risk_score(series, rebalance_date)
+        ranked.append(
+            {
+                "series": series,
+                "factor_value": value,
+                "risk_score": risk_score,
+            }
+        )
+        raw_factor_values.append(value)
 
-    ranked.sort(key=lambda item: item[1], reverse=True)
+    for item in ranked:
+        factor_score = _percentile_score(raw_factor_values, float(item["factor_value"]))
+        risk_score = float(item["risk_score"])
+        if ranking_mode == RANKING_MODE_FACTOR_RISK:
+            combined_score = (
+                factor_score * normalized_factor_weight
+                + risk_score * normalized_risk_weight
+            )
+        else:
+            combined_score = factor_score
+        item["factor_score"] = factor_score
+        item["combined_score"] = combined_score
+
+    ranked.sort(key=lambda item: float(item["combined_score"]), reverse=True)
     if len(ranked) < top_n:
         raise ValueError(
             f"Only {len(ranked)} stocks could be ranked on {rebalance_date}, fewer than top_n={top_n}"
@@ -406,13 +501,16 @@ def backtest_dynamic_factor_strategy(
     top_m: int = EfsConfig.DEFAULT_TOP_M,
     min_samples: int = EfsConfig.DEFAULT_MIN_SAMPLES,
     initial_capital: float = DEFAULT_INITIAL_CAPITAL,
+    ranking_mode: str = RANKING_MODE_FACTOR_ONLY,
+    factor_weight: float = 0.7,
+    risk_weight: float = 0.3,
 ) -> Dict[str, object]:
     """
-    Dynamic factor-only walk-forward backtest.
+    Dynamic factor walk-forward backtest.
 
     On each rebalance date, the service:
     1. Selects the best factor using only historical windows fully known by that date.
-    2. Ranks stocks using that factor alone.
+    2. Ranks stocks using factor-only or factor-plus-risk scoring.
     3. Buys top_n stocks with equal weight on the next trading day.
     4. Holds until the next rebalance date.
     """
@@ -428,6 +526,15 @@ def backtest_dynamic_factor_strategy(
         raise ValueError("future_days must be greater than 0")
     if initial_capital <= 0:
         raise ValueError("initial_capital must be greater than 0")
+    if ranking_mode not in {RANKING_MODE_FACTOR_ONLY, RANKING_MODE_FACTOR_RISK}:
+        raise ValueError(
+            f"ranking_mode must be '{RANKING_MODE_FACTOR_ONLY}' or '{RANKING_MODE_FACTOR_RISK}'"
+        )
+
+    normalized_factor_weight, normalized_risk_weight = _normalize_rank_weights(
+        factor_weight,
+        risk_weight,
+    )
 
     benchmark_stock = Stock.objects.filter(symbol=BENCHMARK_ETF).first()
     if not benchmark_stock:
@@ -490,6 +597,9 @@ def backtest_dynamic_factor_strategy(
             rebalance_date=rebalance_date,
             universe_series=universe_series,
             top_n=top_n,
+            ranking_mode=ranking_mode,
+            factor_weight=normalized_factor_weight,
+            risk_weight=normalized_risk_weight,
         )
 
         trade_start_idx = benchmark_index[rebalance_date] + 1
@@ -505,12 +615,13 @@ def backtest_dynamic_factor_strategy(
         if len(valuation_dates) < 2:
             continue
 
-        valid_ranked: List[Tuple[PriceSeries, float]] = []
-        for series, factor_value in ranked_stocks:
+        valid_ranked: List[Dict[str, object]] = []
+        for item in ranked_stocks:
+            series = item["series"]
             entry_price = series.price_on_or_before(trade_start_date)
             if entry_price is None or entry_price <= 0:
                 continue
-            valid_ranked.append((series, factor_value))
+            valid_ranked.append(item)
 
         if len(valid_ranked) < top_n:
             raise ValueError(
@@ -524,7 +635,8 @@ def backtest_dynamic_factor_strategy(
         allocation_per_stock = portfolio_value_start * weight
 
         holdings = []
-        for rank, (series, factor_value) in enumerate(selected, start=1):
+        for rank, item in enumerate(selected, start=1):
+            series = item["series"]
             entry_price = series.price_on_or_before(trade_start_date)
             if entry_price is None or entry_price <= 0:
                 raise ValueError(f"Missing entry price for {series.stock.symbol} on {trade_start_date}")
@@ -534,7 +646,10 @@ def backtest_dynamic_factor_strategy(
                     "series": series,
                     "symbol": series.stock.symbol,
                     "rank": rank,
-                    "factor_value": factor_value,
+                    "factor_value": float(item["factor_value"]),
+                    "factor_score": float(item["factor_score"]),
+                    "risk_score": float(item["risk_score"]),
+                    "combined_score": float(item["combined_score"]),
                     "weight": weight,
                     "allocation_usd": allocation_per_stock,
                     "entry_price": entry_price,
@@ -605,6 +720,9 @@ def backtest_dynamic_factor_strategy(
                     "symbol": holding["symbol"],
                     "rank": holding["rank"],
                     "factor_value": round(float(holding["factor_value"]), 6),
+                    "factor_score": round(float(holding["factor_score"]), 4),
+                    "risk_score": round(float(holding["risk_score"]), 4),
+                    "combined_score": round(float(holding["combined_score"]), 4),
                     "weight": round(float(holding["weight"]), 6),
                     "allocation_usd": round(float(holding["allocation_usd"]), 2),
                     "entry_price": round(float(holding["entry_price"]), 4),
@@ -640,6 +758,11 @@ def backtest_dynamic_factor_strategy(
                     "eval_dates_count": factor_result.eval_dates_count,
                     "sample_count_mean": round(float(factor_result.sample_count_mean), 2),
                     "candidate_factor_top_k": candidate_factor_top_k,
+                },
+                "ranking_mode": ranking_mode,
+                "ranking_weights": {
+                    "factor_weight": round(float(normalized_factor_weight), 4),
+                    "risk_weight": round(float(normalized_risk_weight), 4),
                 },
                 "holdings": log_holdings,
                 "portfolio_value_start": round(float(period_start_value), 2),
@@ -688,6 +811,9 @@ def backtest_dynamic_factor_strategy(
             "eval_step_days": eval_step_days,
             "top_m": top_m,
             "min_samples": min_samples,
+            "ranking_mode": ranking_mode,
+            "factor_weight": round(float(normalized_factor_weight), 4),
+            "risk_weight": round(float(normalized_risk_weight), 4),
             "benchmark": BENCHMARK_ETF,
         },
         # "portfolio_nav": [round(value, 2) for value in daily_portfolio_values],
